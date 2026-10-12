@@ -75,7 +75,7 @@ local ThemeManager = {
         },
         ["Mint"] = {
             5,
-            { FontColor = "ffffff", MainColor = "242424", AccentColor = "3db488", BackgroundColor = "1c1c1c", OutlineColor = "373737", BackgroundImage = "" },
+            { FontColor = "e6e9ec", MainColor = "1f2428", AccentColor = "4fcf9c", BackgroundColor = "141719", OutlineColor = "2a3036", BackgroundImage = "" },
         },
         ["Tokyo Night"] = {
             6,
@@ -463,8 +463,8 @@ function ThemeManager:SetDefaultTheme(Theme: any)
         FinalTheme.FontFace = FontFace
     
     else
-        LibraryScheme.Font = Font.fromEnum(Enum.Font.Code)
-        FinalTheme.FontFace = "Code"
+        LibraryScheme.Font = Font.fromEnum(Enum.Font.BuilderSans)
+        FinalTheme.FontFace = "BuilderSans"
     end
 
     --// Default Scheme Colors
@@ -818,7 +818,7 @@ function ThemeManager:CreateThemeManager(Themesbox: any)
 
     Themesbox:AddDropdown("FontFace", {
         Text = "Font Face",
-        Default = "Code",
+        Default = "BuilderSans",
         
         Values = { "BuilderSans", "Code", "Fantasy", "Gotham", "Jura", "Roboto", "RobotoMono", "SourceSans" },
         AllowNull = false,

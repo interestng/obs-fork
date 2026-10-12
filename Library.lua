@@ -29,7 +29,7 @@ local Toggles = {}
 local Options = {}
 local Tooltips = {}
 
-local BaseURL = "https://raw.githubusercontent.com/deividcomsono/Obsidian/refs/heads/main/"
+local BaseURL = "https://raw.githubusercontent.com/interestng/obs-fork/main/"
 local CustomImageManager = {}
 local CustomImageManagerAssets = {
     TransparencyTexture = {
@@ -281,7 +281,7 @@ local Library = {
         AccentColor = Color3.fromRGB(125, 85, 255),
         OutlineColor = Color3.fromRGB(40, 40, 40),
         FontColor = Color3.new(1, 1, 1),
-        Font = Font.fromEnum(Enum.Font.Code),
+        Font = Font.fromEnum(Enum.Font.BuilderSans),
 
         RedColor = Color3.fromRGB(255, 50, 50),
         DestructiveColor = Color3.fromRGB(220, 38, 38),
@@ -304,7 +304,10 @@ local Library = {
     ImageManager = CustomImageManager,
 
     --// Misc \\--
-    Notify = nil, Toggle = nil -- we love luau lsp
+    Notify = nil, Toggle = nil, -- we love luau lsp
+
+    --// Window hooks, set by CreateWindow \\--
+    NoteToggle = nil, TogglePin = nil, RefreshHint = nil, ClosePalette = nil, PaletteAct = nil,
 }
 
 if RunService:IsStudio() then
@@ -376,8 +379,8 @@ local Templates = {
         Footer = "No Footer",
 
         Position = UDim2.fromOffset(6, 6),
-        Size = UDim2.fromOffset(720, 600),
-        IconSize = UDim2.fromOffset(30, 30),
+        Size = UDim2.fromOffset(860, 600),
+        IconSize = UDim2.fromOffset(22, 22),
 
         AutoShow = true,
         Center = true,
@@ -393,11 +396,11 @@ local Templates = {
         SearchbarSize = UDim2.fromScale(1, 1),
         GlobalSearch = false,
 
-        CornerRadius = 4,
+        CornerRadius = 6,
         NotifySide = "Right",
         ShowCustomCursor = true,
 
-        Font = Enum.Font.Code,
+        Font = Enum.Font.BuilderSans,
         ToggleKeybind = Enum.KeyCode.RightControl,
 
         ShowMobileButtons = true,
@@ -408,12 +411,20 @@ local Templates = {
         EnableSidebarResize = false,
         EnableCompacting = true,
         DisableCompactingSnap = false,
-        SidebarCompacted = false,
+        SidebarCompacted = true,
         MinContainerWidth = 256,
+
+        --// Outline: the section list between the tab rail and the content \\--
+        ShowOutline = true,
+        OutlineWidth = 176,
+        -- below this window width the outline hides so the content keeps two usable columns
+        OutlineMinWindowWidth = 700,
+        -- where pinned element indexes persist; nil keeps pins for the session only
+        PinsFile = nil,
 
         --// Snapping \\--
         MinSidebarWidth = 128,
-        SidebarCompactWidth = 48,
+        SidebarCompactWidth = 56,
         SidebarCollapseThreshold = 0.5,
 
         --// Dragging \\--
@@ -435,9 +446,9 @@ local Templates = {
         TabSwipeOffset = 26,
         TabSwipeFrom = "bottom",
         TabButtonsStyle = {
-            Gap = 0,
-            Padding = 0,
-            CornerRadius = 0,
+            Gap = 4,
+            Padding = 8,
+            CornerRadius = 8,
             Indicator = false,
             IndicatorWidth = 2,
             IndicatorHeight = 20,
@@ -910,6 +921,25 @@ local function GetTeams()
     end)
 
     return TeamList
+end
+
+local function StripRichText(Text: any): string
+    if typeof(Text) ~= "string" then
+        return ""
+    end
+    return (string.gsub(Text, "<[^>]->", ""))
+end
+
+-- the groupbox an element sits in, through any dependency boxes; nil inside tabboxes and dialogs
+local function OwnerGroupbox(Element)
+    local Parent = Element.Parent
+    while typeof(Parent) == "table" do
+        if Parent.Type == "Groupbox" then
+            return Parent
+        end
+        Parent = Parent.Parent
+    end
+    return nil
 end
 
 function Library:UpdateDependencyBoxes()
@@ -1929,11 +1959,12 @@ do
 end
 
 --// Icons \\--
-local CheckIcon, ArrowIcon, ResizeIcon, KeyIcon, MoveIcon, PopOutIcon, CloseIcon, SettingsIcon
+local CheckIcon, ArrowIcon, ResizeIcon, KeyIcon, MoveIcon, PopOutIcon, CloseIcon, SettingsIcon, CollapseIcon
 function Library:SetIconModule(module: IconModule)
     FetchIcons = true
     Icons = module
 
+    CollapseIcon = Library:GetIcon("chevrons-down-up")
     CheckIcon = Library:GetIcon("check")
     ArrowIcon = Library:GetIcon("chevron-up")
     ResizeIcon = Library:GetIcon("move-diagonal-2")
@@ -2281,6 +2312,47 @@ function Library:MakeDraggable(
 
     local SnapGuideX, SnapGuideY
 
+    -- the main window stays put while a translucent box follows the mouse; it moves once on release
+    local Ghost
+    local GhostTarget
+
+    local function ShowGhost()
+        if not Ghost then
+            Ghost = New("Frame", {
+                BackgroundColor3 = "AccentColor",
+                BackgroundTransparency = 0.88,
+                Visible = false,
+                ZIndex = 9999,
+                Parent = ScreenGui,
+            })
+            New("UICorner", {
+                CornerRadius = UDim.new(0, Library.CornerRadius),
+                Parent = Ghost,
+            })
+            New("UIStroke", {
+                Color = "AccentColor",
+                Transparency = 0.35,
+                Thickness = 1.5,
+                Parent = Ghost,
+            })
+        end
+
+        Ghost.AnchorPoint = UI.AnchorPoint
+        Ghost.Position = UI.Position
+        Ghost.Size = UDim2.fromOffset(UI.AbsoluteSize.X, UI.AbsoluteSize.Y)
+        Ghost.Visible = true
+    end
+
+    local function DropGhost(Apply: boolean)
+        if Ghost then
+            Ghost.Visible = false
+        end
+        if Apply and GhostTarget then
+            UI.Position = GhostTarget
+        end
+        GhostTarget = nil
+    end
+
     local function GetSnapGuides()
         if not SnapGuideX then
             SnapGuideX = New("Frame", {
@@ -2336,6 +2408,7 @@ function Library:MakeDraggable(
 
             Dragging = false
             HideSnapGuides()
+            DropGhost(true)
 
             if Changed and Changed.Connected then
                 Changed:Disconnect()
@@ -2352,6 +2425,7 @@ function Library:MakeDraggable(
         then
             Dragging = false
             HideSnapGuides()
+            DropGhost(false)
 
             if Changed and Changed.Connected then
                 Changed:Disconnect()
@@ -2398,7 +2472,16 @@ function Library:MakeDraggable(
                 end
             end
 
-            UI.Position = UDim2.new(FramePos.X.Scale, NewX, FramePos.Y.Scale, NewY)
+            local Target = UDim2.new(FramePos.X.Scale, NewX, FramePos.Y.Scale, NewY)
+            if IsMainWindow then
+                if not (Ghost and Ghost.Visible) then
+                    ShowGhost()
+                end
+                GhostTarget = Target
+                Ghost.Position = Target
+            else
+                UI.Position = Target
+            end
         end
     end)
 
@@ -2423,6 +2506,9 @@ function Library:MakeDraggable(
         end
         if SnapGuideY then
             SnapGuideY:Destroy()
+        end
+        if Ghost then
+            Ghost:Destroy()
         end
 
         local IdxChanged = table.find(Library.Signals, InputChanged)
@@ -7268,6 +7354,10 @@ do
             if not Toggle.AnyKeyPickerPicking then
                 Toggle:RunChanged()
             end
+
+            if Library.NoteToggle then
+                Library.NoteToggle(Toggle)
+            end
         end
 
         function Toggle:SetDisabled(Disabled: boolean)
@@ -7305,6 +7395,13 @@ do
             Toggle:SetValue(not Toggle.Value)
         end))
 
+        -- right click pins it to the outline
+        table.insert(Toggle.Connections, Button.MouseButton2Click:Connect(function()
+            if Library.TogglePin then
+                Library.TogglePin(Toggle)
+            end
+        end))
+
         if typeof(Toggle.Tooltip) == "string" or typeof(Toggle.DisabledTooltip) == "string" then
             Toggle.TooltipTable = Library:AddTooltip(Toggle.Tooltip, Toggle.DisabledTooltip, Button)
             Toggle.TooltipTable.Disabled = Toggle.Disabled
@@ -7327,7 +7424,11 @@ do
 
         Toggle.Default = Toggle.Value
 
+        Toggle.Idx = Idx
         Toggles[Idx] = Toggle
+        if Library.NoteToggle then
+            Library.NoteToggle(Toggle)
+        end
 
         function Toggle:Destroy()
             Toggle.Destroyed = true
@@ -7542,6 +7643,10 @@ do
             if not Toggle.AnyKeyPickerPicking then
                 Toggle:RunChanged()
             end
+
+            if Library.NoteToggle then
+                Library.NoteToggle(Toggle)
+            end
         end
 
         function Toggle:SetDisabled(Disabled: boolean)
@@ -7579,6 +7684,13 @@ do
             Toggle:SetValue(not Toggle.Value)
         end))
 
+        -- right click pins it to the outline
+        table.insert(Toggle.Connections, Button.MouseButton2Click:Connect(function()
+            if Library.TogglePin then
+                Library.TogglePin(Toggle)
+            end
+        end))
+
         if typeof(Toggle.Tooltip) == "string" or typeof(Toggle.DisabledTooltip) == "string" then
             Toggle.TooltipTable = Library:AddTooltip(Toggle.Tooltip, Toggle.DisabledTooltip, Button)
             Toggle.TooltipTable.Disabled = Toggle.Disabled
@@ -7601,7 +7713,11 @@ do
 
         Toggle.Default = Toggle.Value
 
+        Toggle.Idx = Idx
         Toggles[Idx] = Toggle
+        if Library.NoteToggle then
+            Library.NoteToggle(Toggle)
+        end
 
         function Toggle:Destroy()
             Toggle.Destroyed = true
@@ -10217,6 +10333,7 @@ do
 
             Holder = DepboxContainer,
             Container = DepboxContainer,
+            Parent = Groupbox,
 
             Elements = {},
             DependencyBoxes = {}
@@ -11071,6 +11188,16 @@ function Library:CreateWindow(WindowInfo)
     local LastExpandedWidth = InitialLeftWidth
     local RefreshWindowTitleSize
 
+    --// Outline, pins and the command palette (filled in below the Window table) \\--
+    local Outline
+    local OutlineList
+    local OutlineShown = false
+    local RailDivider
+    local Subtitle
+    local HintLabel
+    local Relayout = function() end
+    local ScheduleOutline = function() end
+
     do
         local KeybindFrame, KeybindContainer, _, KeybindDivider, KeybindLabelPadding = Library:AddDraggableMenu("Keybinds")
         KeybindFrame.AnchorPoint = Vector2.new(0, 0.5)
@@ -11425,9 +11552,13 @@ function Library:CreateWindow(WindowInfo)
         })
         New("UIListLayout", {
             FillDirection = Enum.FillDirection.Horizontal,
-            HorizontalAlignment = Enum.HorizontalAlignment.Center,
+            HorizontalAlignment = Enum.HorizontalAlignment.Left,
             VerticalAlignment = Enum.VerticalAlignment.Center,
-            Padding = UDim.new(0, 6),
+            Padding = UDim.new(0, 8),
+            Parent = TitleHolder,
+        })
+        New("UIPadding", {
+            PaddingLeft = UDim.new(0, 16),
             Parent = TitleHolder,
         })
 
@@ -11455,7 +11586,20 @@ function Library:CreateWindow(WindowInfo)
             BackgroundTransparency = 1,
             Size = UDim2.fromOffset(0, 0),
             Text = WindowInfo.Title,
-            TextSize = 20,
+            TextSize = 18,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Center,
+            Parent = TitleHolder,
+        })
+
+        -- the footer reads as the title's subtitle (the game name); the bottom bar carries the hide hint
+        Subtitle = New("TextLabel", {
+            BackgroundTransparency = 1,
+            Size = UDim2.fromOffset(0, 0),
+            Text = WindowInfo.Footer,
+            TextSize = 13,
+            TextTransparency = 0.5,
             TextTruncate = Enum.TextTruncate.AtEnd,
             TextXAlignment = Enum.TextXAlignment.Left,
             TextYAlignment = Enum.TextYAlignment.Center,
@@ -11465,12 +11609,18 @@ function Library:CreateWindow(WindowInfo)
         RefreshWindowTitleSize = function()
             local IconWidth = 0
             if WindowIcon and WindowIcon.Visible then
-                IconWidth = WindowIcon.Size.X.Offset + 6
+                IconWidth = WindowIcon.Size.X.Offset + 8
             end
 
-            local MaxWidth = math.max(0, (TitleHolder.AbsoluteSize.X / Library.DPIScale) - IconWidth - 12)
+            local MaxWidth = math.max(0, (TitleHolder.AbsoluteSize.X / Library.DPIScale) - IconWidth - 28)
             local NaturalWidth = Library:GetTextBounds(WindowTitle.Text, Library.Scheme.Font, WindowTitle.TextSize)
-            WindowTitle.Size = UDim2.new(0, math.min(NaturalWidth, MaxWidth), 1, 0)
+            local TitleWidth = math.min(NaturalWidth, MaxWidth)
+            WindowTitle.Size = UDim2.new(0, TitleWidth, 1, 0)
+
+            local SubWidth = Library:GetTextBounds(Subtitle.Text, Library.Scheme.Font, Subtitle.TextSize)
+            local SubRoom = MaxWidth - TitleWidth - 8
+            Subtitle.Visible = WindowTitle.Visible and SubRoom > 24
+            Subtitle.Size = UDim2.new(0, math.max(0, math.min(SubWidth, SubRoom)), 1, 0)
         end
         RefreshWindowTitleSize()
 
@@ -11542,7 +11692,7 @@ function Library:CreateWindow(WindowInfo)
 
         SearchBox = New("TextBox", {
             BackgroundColor3 = "MainColor",
-            PlaceholderText = "Search",
+            PlaceholderText = "Search this tab",
             Size = WindowInfo.SearchbarSize,
             TextScaled = true,
             Visible = not (WindowInfo.DisableSearch or false),
@@ -11597,17 +11747,38 @@ function Library:CreateWindow(WindowInfo)
             Library:ApplyLucideIcon(SearchIconImage, SearchIcon)
         end
 
-        if MoveIcon then
-            local MoveIconImage = New("ImageLabel", {
-                AnchorPoint = Vector2.new(1, 0.5),
-                ImageColor3 = "OutlineColor",
-                Position = UDim2.new(1, -10, 0.5, 0),
-                Size = UDim2.fromOffset(28, 28),
-                SizeConstraint = Enum.SizeConstraint.RelativeYY,
-                Parent = TopBar,
-            })
-            Library:ApplyLucideIcon(MoveIconImage, MoveIcon)
+        -- the search box text is TextScaled, so the hint sits in a frame of its own
+        local PaletteChip = New("TextLabel", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            BackgroundColor3 = "BackgroundColor",
+            Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.new(0, 44, 1, 2),
+            Text = "Ctrl K",
+            TextSize = 12,
+            TextTransparency = 0.4,
+            Parent = SearchBox,
+        })
+        New("UICorner", {
+            CornerRadius = UDim.new(0, 4),
+            Parent = PaletteChip,
+        })
+
+        local HideIcon = Library:GetIcon("minus")
+        local HideButton = New("ImageButton", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            BackgroundTransparency = 1,
+            ImageColor3 = "FontColor",
+            ImageTransparency = 0.5,
+            Position = UDim2.new(1, -12, 0.5, 0),
+            Size = UDim2.fromOffset(22, 22),
+            Parent = TopBar,
+        })
+        if HideIcon then
+            Library:ApplyLucideIcon(HideButton, HideIcon)
         end
+        HideButton.MouseButton1Click:Connect(function()
+            Library:Toggle(false)
+        end)
 
         --// Bottom Bar \\--
         local BottomClip = New("Frame", {
@@ -11654,12 +11825,16 @@ function Library:CreateWindow(WindowInfo)
         })
 
         --// Footer \\-
-        FooterLabel = New("TextLabel", {
+        FooterLabel = Subtitle
+        HintLabel = New("TextLabel", {
+            AnchorPoint = Vector2.new(1, 0),
             BackgroundTransparency = 1,
-            Size = UDim2.fromScale(1, 1),
-            Text = WindowInfo.Footer,
-            TextSize = 14,
-            TextTransparency = 0.5,
+            Position = UDim2.new(1, -26, 0, 0),
+            Size = UDim2.new(1, -40, 1, 0),
+            Text = "",
+            TextSize = 12,
+            TextTransparency = 0.55,
+            TextXAlignment = Enum.TextXAlignment.Right,
             Parent = BottomBar,
         })
 
@@ -11676,6 +11851,7 @@ function Library:CreateWindow(WindowInfo)
             })
 
             Library:MakeResizable(MainFrame, ResizeButton, function()
+                Relayout()
                 for _, Tab in Library.Tabs do
                     Tab:Resize(true)
                 end
@@ -11714,6 +11890,45 @@ function Library:CreateWindow(WindowInfo)
             PaddingRight = UDim.new(0, TabButtonsStyle.Padding),
             PaddingTop = UDim.new(0, TabButtonsStyle.Padding),
             Parent = Tabs,
+        })
+
+        --// Outline \\--
+        RailDivider = New("Frame", {
+            BackgroundColor3 = "OutlineColor",
+            Position = UDim2.fromOffset(InitialLeftWidth, 49),
+            Size = UDim2.new(0, 1, 1, -70),
+            Visible = false,
+            ZIndex = 2,
+            Parent = MainFrame,
+        })
+
+        Outline = New("Frame", {
+            BackgroundColor3 = "BackgroundColor",
+            Position = UDim2.fromOffset(InitialLeftWidth + 1, 49),
+            Size = UDim2.new(0, 0, 1, -70),
+            Visible = false,
+            Parent = MainFrame,
+        })
+
+        OutlineList = New("ScrollingFrame", {
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1,
+            CanvasSize = UDim2.fromScale(0, 0),
+            ScrollBarImageTransparency = 1,
+            ScrollBarThickness = 0,
+            Size = UDim2.fromScale(1, 1),
+            Parent = Outline,
+        })
+        New("UIListLayout", {
+            Padding = UDim.new(0, 2),
+            Parent = OutlineList,
+        })
+        New("UIPadding", {
+            PaddingBottom = UDim.new(0, 10),
+            PaddingLeft = UDim.new(0, 8),
+            PaddingRight = UDim.new(0, 8),
+            PaddingTop = UDim.new(0, 12),
+            Parent = OutlineList,
         })
 
         --// Container \\--
@@ -11825,6 +12040,7 @@ function Library:CreateWindow(WindowInfo)
 
         FooterLabel.Text = Footer
         WindowInfo.Footer = Footer
+        RefreshWindowTitleSize()
     end
 
     function Window:SetAlwaysOnTop(Enabled: boolean)
@@ -11975,9 +12191,10 @@ function Library:CreateWindow(WindowInfo)
             IsCompact = Window:GetSidebarWidth() <= WindowInfo.CompactWidthActivation
         end
 
-        WindowTitle.Visible = not IsCompact
+        -- with the outline beside it, a compact rail still leaves the title its room
+        WindowTitle.Visible = not IsCompact or OutlineShown
         if not WindowInfo.Icon then
-            WindowIcon.Visible = IsCompact
+            WindowIcon.Visible = IsCompact and not OutlineShown
         end
 
         for _, Button in Library.TabButtons do
@@ -12009,21 +12226,37 @@ function Library:CreateWindow(WindowInfo)
     function Window:SetSidebarWidth(Width)
         Width = math.clamp(Width, 48, MainFrame.Size.X.Offset - WindowInfo.MinContainerWidth - 1)
 
-        DividerLine.Position = UDim2.fromOffset(Width, 0)
+        OutlineShown = WindowInfo.ShowOutline == true
+            and MainFrame.Size.X.Offset >= WindowInfo.OutlineMinWindowWidth
+            and MainFrame.Size.X.Offset - Width - WindowInfo.OutlineWidth >= WindowInfo.MinContainerWidth
+        local OutlineWidth = OutlineShown and WindowInfo.OutlineWidth or 0
+        local LeftWidth = Width + OutlineWidth
 
-        TitleHolder.Size = UDim2.new(0, Width, 1, 0)
-        RightWrapper.Size = UDim2.new(1, -Width - 57 - 1, 1, -16)
+        DividerLine.Position = UDim2.fromOffset(LeftWidth, 0)
+        RailDivider.Position = UDim2.fromOffset(Width, 49)
+        RailDivider.Visible = OutlineShown
+        Outline.Position = UDim2.fromOffset(Width + 1, 49)
+        Outline.Size = UDim2.new(0, math.max(0, OutlineWidth - 1), 1, -70)
+        Outline.Visible = OutlineShown
+
+        TitleHolder.Size = UDim2.new(0, LeftWidth, 1, 0)
+        RightWrapper.Size = UDim2.new(1, -LeftWidth - 57 - 1, 1, -16)
         Tabs.Size = UDim2.new(0, Width, 1, -70)
-        Container.Size = UDim2.new(1, -Width - 1, 1, -70)
+        Container.Size = UDim2.new(1, -LeftWidth - 1, 1, -70)
 
         if WindowInfo.EnableCompacting then
             ApplyCompact()
         end
-    
+
         RefreshWindowTitleSize()
         if not IsCompact then
             LastExpandedWidth = Width
         end
+        ScheduleOutline()
+    end
+
+    Relayout = function()
+        Window:SetSidebarWidth(Window:GetSidebarWidth())
     end
 
     function Window:ShowTabInfo(Name, Description)
@@ -12255,6 +12488,8 @@ function Library:CreateWindow(WindowInfo)
             },
 
             Groupboxes = {},
+            -- Groupboxes is keyed by name; the outline and the search need creation order
+            GroupboxOrder = {},
             Tabboxes = {},
             DependencyGroupboxes = {},
         }
@@ -12864,6 +13099,7 @@ function Library:CreateWindow(WindowInfo)
 
             local GroupboxCollapseArrow
             local GroupboxLine
+            local GroupboxBadge
 
             do
                 GroupboxHolder = New("Frame", {
@@ -12914,7 +13150,20 @@ function Library:CreateWindow(WindowInfo)
                     AutomaticSize = Enum.AutomaticSize.Y,
                     BackgroundTransparency = 1,
                     Position = UDim2.fromOffset(BoxIcon and 24 or 0, 0),
-                    Size = UDim2.new(1, -RightInset - (BoxIcon and 24 or 0), 0, 0),
+                    Size = UDim2.new(1, -RightInset - 40 - (BoxIcon and 24 or 0), 0, 0),
+                    Parent = GroupboxTop,
+                })
+
+                GroupboxBadge = New("TextLabel", {
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    AutomaticSize = Enum.AutomaticSize.X,
+                    BackgroundTransparency = 1,
+                    Position = UDim2.new(1, -RightInset - 4, 0.5, 0),
+                    Size = UDim2.fromOffset(0, 16),
+                    Text = "",
+                    TextColor3 = "AccentColor",
+                    TextSize = 13,
+                    Visible = false,
                     Parent = GroupboxTop,
                 })
                 New("UIListLayout", {
@@ -13202,12 +13451,19 @@ function Library:CreateWindow(WindowInfo)
                 if BoxHolder then
                     BoxHolder:Destroy()
                 end
+
+                local OrderIndex = table.find(Tab.GroupboxOrder, Groupbox)
+                if OrderIndex then
+                    table.remove(Tab.GroupboxOrder, OrderIndex)
+                end
+                ScheduleOutline()
             end
 
             function Groupbox:SetVisible(Visible: boolean)
                 Groupbox.Visible = Visible
                 BoxHolder.Visible = Visible
                 SyncPopOutVisibility(Groupbox)
+                ScheduleOutline()
 
                 if Visible == true and Library.Searching then
                     Library:UpdateSearch(Library.SearchText)
@@ -13222,6 +13478,24 @@ function Library:CreateWindow(WindowInfo)
                 Groupbox:SetVisible(false)
             end
 
+            -- toggles switched on anywhere inside, dependency boxes included
+            function Groupbox:CountOn(): number
+                local Count = 0
+                for _, Toggle in Toggles do
+                    if Toggle.Value == true and Toggle.Visible ~= false and OwnerGroupbox(Toggle) == Groupbox then
+                        Count += 1
+                    end
+                end
+                return Count
+            end
+
+            function Groupbox:RefreshBadge(): number
+                local Count = Groupbox:CountOn()
+                GroupboxBadge.Text = Count .. " on"
+                GroupboxBadge.Visible = Count > 0
+                return Count
+            end
+
             if Info.DisableCollapsing ~= true then
                 GroupboxCollapseArrow.MouseButton1Click:Connect(function()
                     Groupbox:ToggleCollapsed()
@@ -13233,6 +13507,8 @@ function Library:CreateWindow(WindowInfo)
 
             Groupbox:Resize()
             Tab.Groupboxes[Info.Name] = Groupbox
+            table.insert(Tab.GroupboxOrder, Groupbox)
+            ScheduleOutline()
 
             if Info.Visible == false then
                 Groupbox:Hide()
@@ -13304,6 +13580,7 @@ function Library:CreateWindow(WindowInfo)
             Tab:RefreshSides()
 
             Library.ActiveTab = Tab
+            ScheduleOutline()
 
             if Library.Searching then
                 Library:UpdateSearch(Library.SearchText)
@@ -14364,6 +14641,12 @@ function Library:CreateWindow(WindowInfo)
             Library.Toggled = not Library.Toggled
         end
 
+        if Library.Toggled and Library.RefreshHint then
+            Library.RefreshHint()
+        elseif not Library.Toggled and Library.ClosePalette then
+            Library.ClosePalette()
+        end
+
         if Library.Animations and Library.Animations.ToggleWindow == true then
             local FadeTime = Library.WindowAnimationInfo.Time
             Fading = true
@@ -14533,6 +14816,8 @@ function Library:CreateWindow(WindowInfo)
     Window:SetAlwaysOnTop(WindowInfo.AlwaysOnTop)
     if WindowInfo.EnableCompacting and WindowInfo.SidebarCompacted then
         Window:SetSidebarWidth(WindowInfo.SidebarCompactWidth)
+    else
+        Window:SetSidebarWidth(InitialLeftWidth)
     end
     if WindowInfo.AutoShow and not Library.ActiveLoading then
         task.spawn(Library.Toggle)
@@ -14567,6 +14852,771 @@ function Library:CreateWindow(WindowInfo)
             LockButton.Button.Visible = false
         end
     end
+
+    --// Jumping to a groupbox or element \\--
+    local function Flash(Target: GuiObject)
+        local Flasher = New("Frame", {
+            BackgroundColor3 = "AccentColor",
+            BackgroundTransparency = 0.8,
+            Size = UDim2.fromScale(1, 1),
+            ZIndex = Target.ZIndex + 1,
+            Parent = Target,
+        })
+        New("UICorner", {
+            CornerRadius = UDim.new(0, Library.CornerRadius),
+            Parent = Flasher,
+        })
+        local Fade = TweenService:Create(Flasher, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundTransparency = 1,
+        })
+        Fade.Completed:Once(function()
+            Library:RemoveFromRegistry(Flasher)
+            Flasher:Destroy()
+        end)
+        Fade:Play()
+    end
+
+    local function JumpTo(Groupbox, Element)
+        if not Groupbox or Groupbox.Destroyed then
+            return
+        end
+        if Groupbox.Tab and Library.ActiveTab ~= Groupbox.Tab then
+            Groupbox.Tab:Show()
+        end
+        if Groupbox.Collapsed then
+            Groupbox:SetCollapsed(false)
+        end
+
+        -- a frame later, once the tab is visible and the groupbox has its expanded size
+        task.defer(function()
+            local Target = (Element and (Element.Holder or Element.Base)) or Groupbox.Holder
+            local Side = Groupbox.BoxHolder and Groupbox.BoxHolder.Parent
+            if Groupbox.PoppedOut or not (Side and Side:IsA("ScrollingFrame")) then
+                Flash(Target)
+                return
+            end
+
+            local Offset = (Target.AbsolutePosition.Y - Side.AbsolutePosition.Y) / Library.DPIScale
+            Side.CanvasPosition = Vector2.new(0, math.max(0, Side.CanvasPosition.Y + Offset - 8))
+            Flash(Target)
+        end)
+    end
+
+    --// Pins \\--
+    local HttpService = cloneref(game:GetService("HttpService"))
+    local Pins = {}
+
+    if typeof(WindowInfo.PinsFile) == "string" and readfile and isfile then
+        pcall(function()
+            if isfile(WindowInfo.PinsFile) then
+                local Saved = HttpService:JSONDecode(readfile(WindowInfo.PinsFile))
+                if typeof(Saved) == "table" then
+                    for _, Idx in Saved do
+                        if typeof(Idx) == "string" then
+                            table.insert(Pins, Idx)
+                        end
+                    end
+                end
+            end
+        end)
+    end
+
+    local function SavePins()
+        if typeof(WindowInfo.PinsFile) ~= "string" or not writefile then
+            return
+        end
+        pcall(writefile, WindowInfo.PinsFile, HttpService:JSONEncode(Pins))
+    end
+
+    Library.TogglePin = function(Toggle)
+        if typeof(Toggle.Idx) ~= "string" then
+            return
+        end
+        local Index = table.find(Pins, Toggle.Idx)
+        if Index then
+            table.remove(Pins, Index)
+        else
+            table.insert(Pins, Toggle.Idx)
+        end
+        SavePins()
+        ScheduleOutline()
+        Library:Notify({
+            Title = Index and "Unpinned" or "Pinned",
+            Description = StripRichText(Toggle.Text),
+            Time = 2,
+        })
+    end
+
+    --// Outline \\--
+    local OutlineBadges = {}
+    local PinnedSwitches = {}
+    local OutlinePending = false
+
+    local function OutlineHeader(Text: string, Order: number)
+        local Holder = New("Frame", {
+            BackgroundTransparency = 1,
+            LayoutOrder = Order,
+            Size = UDim2.new(1, 0, 0, 24),
+            Parent = OutlineList,
+        })
+        New("TextLabel", {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(8, 0),
+            Size = UDim2.new(1, -36, 1, 0),
+            Text = string.upper(Text),
+            TextSize = 12,
+            TextTransparency = 0.55,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = Holder,
+        })
+        return Holder
+    end
+
+    local function OutlineRow(Order: number)
+        local Row = New("TextButton", {
+            BackgroundColor3 = "MainColor",
+            BackgroundTransparency = 1,
+            LayoutOrder = Order,
+            Size = UDim2.new(1, 0, 0, 30),
+            Text = "",
+            Parent = OutlineList,
+        })
+        New("UICorner", {
+            CornerRadius = UDim.new(0, Library.CornerRadius),
+            Parent = Row,
+        })
+        Row.MouseEnter:Connect(function()
+            TweenService:Create(Row, Library.TweenInfo, { BackgroundTransparency = 0.5 }):Play()
+        end)
+        Row.MouseLeave:Connect(function()
+            TweenService:Create(Row, Library.TweenInfo, { BackgroundTransparency = 1 }):Play()
+        end)
+        return Row
+    end
+
+    local function RowLabel(Row: GuiObject, Text: string, RightInset: number)
+        return New("TextLabel", {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(8, 0),
+            Size = UDim2.new(1, -16 - RightInset, 1, 0),
+            Text = StripRichText(Text),
+            TextSize = 14,
+            TextTransparency = 0.2,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = Row,
+        })
+    end
+
+    local function PaintSwitch(Switch: Frame, On: boolean)
+        Switch.BackgroundColor3 = On and Library.Scheme.AccentColor or Library.Scheme.MainColor
+        Library.Registry[Switch].BackgroundColor3 = On and "AccentColor" or "MainColor"
+        local Ball = Switch:FindFirstChild("Ball")
+        if Ball then
+            Ball.AnchorPoint = Vector2.new(On and 1 or 0, 0.5)
+            Ball.Position = UDim2.new(On and 1 or 0, On and -2 or 2, 0.5, 0)
+        end
+    end
+
+    local function RenderOutline()
+        OutlinePending = false
+        if Library.Unloaded or not OutlineList then
+            return
+        end
+
+        for _, Child in OutlineList:GetChildren() do
+            if Child:IsA("GuiObject") then
+                Child:Destroy()
+            end
+        end
+        table.clear(OutlineBadges)
+        table.clear(PinnedSwitches)
+
+        local Tab = Library.ActiveTab
+        if not OutlineShown or not Tab or Tab.IsKeyTab then
+            return
+        end
+
+        local Order = 0
+        local function Next()
+            Order += 1
+            return Order
+        end
+
+        local Header = OutlineHeader(Tab.Name, Next())
+        if CollapseIcon then
+            local CollapseAll = New("ImageButton", {
+                AnchorPoint = Vector2.new(1, 0.5),
+                BackgroundTransparency = 1,
+                ImageColor3 = "FontColor",
+                ImageTransparency = 0.5,
+                Position = UDim2.new(1, -4, 0.5, 0),
+                Size = UDim2.fromOffset(16, 16),
+                Parent = Header,
+            })
+            Library:ApplyLucideIcon(CollapseAll, CollapseIcon)
+            Library:AddTooltip("Collapse or expand every section", nil, CollapseAll)
+            CollapseAll.MouseButton1Click:Connect(function()
+                local AnyOpen = false
+                for _, Groupbox in Tab.GroupboxOrder do
+                    if Groupbox.Visible ~= false and not Groupbox.Collapsed then
+                        AnyOpen = true
+                        break
+                    end
+                end
+                for _, Groupbox in Tab.GroupboxOrder do
+                    if Groupbox.Visible ~= false then
+                        Groupbox:SetCollapsed(AnyOpen)
+                    end
+                end
+            end)
+        end
+
+        for _, Groupbox in Tab.GroupboxOrder do
+            if Groupbox.Visible == false or Groupbox.Destroyed then
+                continue
+            end
+
+            local Row = OutlineRow(Next())
+            RowLabel(Row, Groupbox.Name, 32)
+            local Badge = New("TextLabel", {
+                AnchorPoint = Vector2.new(1, 0.5),
+                BackgroundTransparency = 1,
+                Position = UDim2.new(1, -8, 0.5, 0),
+                Size = UDim2.fromOffset(28, 16),
+                Text = "",
+                TextColor3 = "AccentColor",
+                TextSize = 13,
+                TextXAlignment = Enum.TextXAlignment.Right,
+                Parent = Row,
+            })
+            local Count = Groupbox:RefreshBadge()
+            Badge.Text = Count > 0 and tostring(Count) or ""
+            OutlineBadges[Groupbox] = Badge
+
+            Row.MouseButton1Click:Connect(function()
+                JumpTo(Groupbox)
+            end)
+        end
+
+        local Pinned = {}
+        for _, Idx in Pins do
+            local Toggle = Toggles[Idx]
+            if Toggle and not Toggle.Destroyed then
+                table.insert(Pinned, Toggle)
+            end
+        end
+        if #Pinned == 0 then
+            return
+        end
+
+        New("Frame", {
+            BackgroundTransparency = 1,
+            LayoutOrder = Next(),
+            Size = UDim2.new(1, 0, 0, 10),
+            Parent = OutlineList,
+        })
+        OutlineHeader("Pinned", Next())
+
+        for _, Toggle in Pinned do
+            local Row = OutlineRow(Next())
+            RowLabel(Row, Toggle.Text, 36)
+
+            local Switch = New("Frame", {
+                AnchorPoint = Vector2.new(1, 0.5),
+                BackgroundColor3 = "MainColor",
+                Position = UDim2.new(1, -6, 0.5, 0),
+                Size = UDim2.fromOffset(28, 16),
+                Parent = Row,
+            })
+            New("UICorner", {
+                CornerRadius = UDim.new(1, 0),
+                Parent = Switch,
+            })
+            New("UIStroke", {
+                Color = "OutlineColor",
+                Parent = Switch,
+            })
+            local Ball = New("Frame", {
+                BackgroundColor3 = "FontColor",
+                Name = "Ball",
+                Size = UDim2.fromOffset(12, 12),
+                Parent = Switch,
+            })
+            New("UICorner", {
+                CornerRadius = UDim.new(1, 0),
+                Parent = Ball,
+            })
+            PaintSwitch(Switch, Toggle.Value == true)
+            PinnedSwitches[Toggle] = Switch
+
+            Row.MouseButton1Click:Connect(function()
+                if not Toggle.Disabled then
+                    Toggle:SetValue(not Toggle.Value)
+                end
+            end)
+            Row.MouseButton2Click:Connect(function()
+                Library.TogglePin(Toggle)
+            end)
+        end
+    end
+
+    -- many groupboxes are added in one frame while a game builds; render once after them
+    ScheduleOutline = function()
+        if OutlinePending then
+            return
+        end
+        OutlinePending = true
+        task.defer(RenderOutline)
+    end
+
+    Library.NoteToggle = function(Toggle)
+        local Groupbox = OwnerGroupbox(Toggle)
+        if Groupbox and Groupbox.RefreshBadge then
+            local Count = Groupbox:RefreshBadge()
+            local Badge = OutlineBadges[Groupbox]
+            if Badge then
+                Badge.Text = Count > 0 and tostring(Count) or ""
+            end
+        end
+
+        local Switch = PinnedSwitches[Toggle]
+        if Switch then
+            PaintSwitch(Switch, Toggle.Value == true)
+        end
+    end
+
+    --// Command palette (Ctrl K): search every element in every tab \\--
+    local PALETTE_ROWS = 8
+    local PaletteOpen = false
+    local PaletteIndex = {}
+    local PaletteResults = {}
+    local PaletteSelected = 1
+    local PaletteRowFrames = {}
+
+    local PaletteOverlay = New("TextButton", {
+        AutoButtonColor = false,
+        BackgroundColor3 = "DarkColor",
+        BackgroundTransparency = 0.45,
+        Size = UDim2.fromScale(1, 1),
+        Text = "",
+        Visible = false,
+        ZIndex = 50,
+        Parent = MainFrame,
+    })
+    table.insert(
+        Library.Corners,
+        New("UICorner", {
+            CornerRadius = UDim.new(0, WindowInfo.CornerRadius),
+            Parent = PaletteOverlay,
+        })
+    )
+
+    local PalettePanel = New("TextButton", {
+        AnchorPoint = Vector2.new(0.5, 0),
+        AutoButtonColor = false,
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = "BackgroundColor",
+        Position = UDim2.new(0.5, 0, 0, 64),
+        Size = UDim2.new(0.62, 0, 0, 0),
+        Text = "",
+        ZIndex = 51,
+        Parent = PaletteOverlay,
+    })
+    New("UICorner", {
+        CornerRadius = UDim.new(0, WindowInfo.CornerRadius + 2),
+        Parent = PalettePanel,
+    })
+    New("UIStroke", {
+        Color = "OutlineColor",
+        Parent = PalettePanel,
+    })
+    New("UIListLayout", {
+        Parent = PalettePanel,
+    })
+
+    local PaletteInput = New("TextBox", {
+        BackgroundTransparency = 1,
+        ClearTextOnFocus = false,
+        LayoutOrder = 1,
+        PlaceholderText = "Search every feature",
+        Size = UDim2.new(1, 0, 0, 46),
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 52,
+        Parent = PalettePanel,
+    })
+    New("UIPadding", {
+        PaddingLeft = UDim.new(0, 16),
+        PaddingRight = UDim.new(0, 16),
+        Parent = PaletteInput,
+    })
+    Library:MakeLine(PalettePanel, {
+        LayoutOrder = 2,
+        Size = UDim2.new(1, 0, 0, 1),
+        ZIndex = 52,
+    })
+
+    local PaletteList = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        LayoutOrder = 3,
+        Size = UDim2.fromScale(1, 0),
+        ZIndex = 52,
+        Parent = PalettePanel,
+    })
+    New("UIListLayout", {
+        Padding = UDim.new(0, 2),
+        Parent = PaletteList,
+    })
+    New("UIPadding", {
+        PaddingBottom = UDim.new(0, 6),
+        PaddingLeft = UDim.new(0, 6),
+        PaddingRight = UDim.new(0, 6),
+        PaddingTop = UDim.new(0, 6),
+        Parent = PaletteList,
+    })
+
+    local PaletteEmpty = New("TextLabel", {
+        BackgroundTransparency = 1,
+        LayoutOrder = 99,
+        Size = UDim2.new(1, 0, 0, 34),
+        Text = "Nothing matches",
+        TextSize = 14,
+        TextTransparency = 0.5,
+        Visible = false,
+        ZIndex = 53,
+        Parent = PaletteList,
+    })
+
+    Library:MakeLine(PalettePanel, {
+        LayoutOrder = 4,
+        Size = UDim2.new(1, 0, 0, 1),
+        ZIndex = 52,
+    })
+    New("TextLabel", {
+        BackgroundTransparency = 1,
+        LayoutOrder = 5,
+        Size = UDim2.new(1, 0, 0, 28),
+        Text = "Up/Down  move     Enter  toggle or press     Tab  go to it     Esc  close",
+        TextSize = 12,
+        TextTransparency = 0.55,
+        ZIndex = 52,
+        Parent = PalettePanel,
+    })
+
+    local SEARCHABLE = {
+        Toggle = true,
+        Slider = true,
+        Dropdown = true,
+        Input = true,
+        Button = true,
+    }
+
+    local function CollectElements(Box, Groupbox, Path: string)
+        for _, Element in Box.Elements or {} do
+            if SEARCHABLE[Element.Type] and not Element.Destroyed and typeof(Element.Text) == "string" then
+                local Text = StripRichText(Element.Text)
+                if Trim(Text) ~= "" then
+                    table.insert(PaletteIndex, { Text = Text, Path = Path, Element = Element, Groupbox = Groupbox })
+                end
+            end
+        end
+        for _, Depbox in Box.DependencyBoxes or {} do
+            if Depbox.Visible ~= false then
+                CollectElements(Depbox, Groupbox, Path)
+            end
+        end
+    end
+
+    local function BuildPaletteIndex()
+        table.clear(PaletteIndex)
+        for _, Tab in Library.Tabs do
+            if typeof(Tab) ~= "table" or Tab.IsKeyTab or not Tab.GroupboxOrder then
+                continue
+            end
+            for _, Groupbox in Tab.GroupboxOrder do
+                if Groupbox.Destroyed or Groupbox.Visible == false then
+                    continue
+                end
+                table.insert(PaletteIndex, { Text = Groupbox.Name, Path = Tab.Name, Groupbox = Groupbox, IsSection = true })
+                CollectElements(Groupbox, Groupbox, Tab.Name .. " / " .. Groupbox.Name)
+            end
+        end
+    end
+
+    local function ElementState(Entry): string
+        if Entry.IsSection then
+            return "section"
+        end
+        local Element = Entry.Element
+        if Element.Type == "Toggle" then
+            return Element.Value and "on" or "off"
+        elseif Element.Type == "Slider" then
+            return tostring(Element.Value)
+        elseif Element.Type == "Dropdown" then
+            if typeof(Element.Value) == "table" then
+                local Count = 0
+                for _, Picked in Element.Value do
+                    if Picked then
+                        Count += 1
+                    end
+                end
+                return Count .. " picked"
+            end
+            return tostring(Element.Value or "")
+        elseif Element.Type == "Button" then
+            return "press"
+        end
+        return ""
+    end
+
+    local function PaintPalette()
+        for Index, Row in PaletteRowFrames do
+            local Entry = PaletteResults[Index]
+            Row.Visible = Entry ~= nil
+            if not Entry then
+                continue
+            end
+
+            Row.BackgroundTransparency = Index == PaletteSelected and 0 or 1
+            Row.Title.Text = Entry.Text
+            Row.Path.Text = Entry.Path
+            local State = ElementState(Entry)
+            Row.State.Text = State
+            local On = State == "on"
+            Row.State.TextColor3 = On and Library.Scheme.AccentColor or Library.Scheme.FontColor
+            Row.State.TextTransparency = On and 0 or 0.5
+        end
+        PaletteEmpty.Visible = #PaletteResults == 0 and Trim(PaletteInput.Text) ~= ""
+    end
+
+    local function SearchPalette()
+        local Query = NormalizeSearch(string.lower(PaletteInput.Text))
+        table.clear(PaletteResults)
+
+        if Trim(Query) ~= "" then
+            local Scored = {}
+            for _, Entry in PaletteIndex do
+                local Score = FuzzyMatchScore(Entry.Text, Query)
+                if Score > 0 then
+                    -- a section ranks just under an element with the same score
+                    table.insert(Scored, { Entry = Entry, Score = Score - (Entry.IsSection and 0.01 or 0) })
+                end
+            end
+            table.sort(Scored, function(A, B)
+                return A.Score > B.Score
+            end)
+            for Index = 1, math.min(PALETTE_ROWS, #Scored) do
+                PaletteResults[Index] = Scored[Index].Entry
+            end
+        end
+
+        PaletteSelected = 1
+        PaintPalette()
+    end
+
+    for Index = 1, PALETTE_ROWS do
+        local Row = New("TextButton", {
+            BackgroundColor3 = "MainColor",
+            BackgroundTransparency = 1,
+            LayoutOrder = Index,
+            Size = UDim2.new(1, 0, 0, 34),
+            Text = "",
+            Visible = false,
+            ZIndex = 53,
+            Parent = PaletteList,
+        })
+        New("UICorner", {
+            CornerRadius = UDim.new(0, Library.CornerRadius),
+            Parent = Row,
+        })
+        New("TextLabel", {
+            BackgroundTransparency = 1,
+            Name = "Title",
+            Position = UDim2.fromOffset(10, 0),
+            Size = UDim2.new(0.5, -10, 1, 0),
+            Text = "",
+            TextSize = 14,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 54,
+            Parent = Row,
+        })
+        New("TextLabel", {
+            AnchorPoint = Vector2.new(1, 0),
+            BackgroundTransparency = 1,
+            Name = "Path",
+            Position = UDim2.new(1, -70, 0, 0),
+            Size = UDim2.new(0.5, -76, 1, 0),
+            Text = "",
+            TextSize = 12,
+            TextTransparency = 0.55,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Right,
+            ZIndex = 54,
+            Parent = Row,
+        })
+        New("TextLabel", {
+            AnchorPoint = Vector2.new(1, 0),
+            BackgroundTransparency = 1,
+            Name = "State",
+            Position = UDim2.new(1, -10, 0, 0),
+            Size = UDim2.new(0, 54, 1, 0),
+            Text = "",
+            TextSize = 12,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Right,
+            ZIndex = 54,
+            Parent = Row,
+        })
+
+        Row.MouseEnter:Connect(function()
+            if PaletteResults[Index] then
+                PaletteSelected = Index
+                PaintPalette()
+            end
+        end)
+        Row.MouseButton1Click:Connect(function()
+            PaletteSelected = Index
+            Library.PaletteAct(false)
+        end)
+        PaletteRowFrames[Index] = Row
+    end
+
+    local function ClosePalette()
+        if not PaletteOpen then
+            return
+        end
+        PaletteOpen = false
+        PaletteOverlay.Visible = false
+        PaletteInput:ReleaseFocus()
+    end
+
+    local function OpenPalette()
+        if PaletteOpen or not Library.Toggled then
+            return
+        end
+        PaletteOpen = true
+        BuildPaletteIndex()
+        PaletteInput.Text = ""
+        SearchPalette()
+        PaletteOverlay.Visible = true
+        task.defer(function()
+            if PaletteOpen then
+                PaletteInput:CaptureFocus()
+            end
+        end)
+    end
+
+    -- Enter toggles a toggle or presses a button and keeps the palette open; anything else, or Tab, goes to it
+    Library.PaletteAct = function(Jump: boolean)
+        local Entry = PaletteResults[PaletteSelected]
+        if not Entry then
+            return
+        end
+
+        local Element = Entry.Element
+        if not Jump and Element and not Element.Disabled then
+            if Element.Type == "Toggle" then
+                Element:SetValue(not Element.Value)
+                PaintPalette()
+                return
+            elseif Element.Type == "Button" then
+                ClosePalette()
+                Library:SafeCallback(Element.Func)
+                return
+            end
+        end
+
+        ClosePalette()
+        JumpTo(Entry.Groupbox, Element)
+    end
+
+    function Window:OpenPalette()
+        OpenPalette()
+    end
+    Library.ClosePalette = ClosePalette
+
+    PaletteOverlay.MouseButton1Click:Connect(ClosePalette)
+
+    Library:GiveSignal(PaletteInput:GetPropertyChangedSignal("Text"):Connect(function()
+        -- Tab is ours; strip it if the box took it
+        if string.find(PaletteInput.Text, "\t", 1, true) then
+            PaletteInput.Text = string.gsub(PaletteInput.Text, "\t", "")
+            return
+        end
+        if PaletteOpen then
+            SearchPalette()
+        end
+    end))
+
+    Library:GiveSignal(PaletteInput.FocusLost:Connect(function(EnterPressed: boolean, Input: InputObject?)
+        if not PaletteOpen then
+            return
+        end
+        if EnterPressed then
+            Library.PaletteAct(false)
+            if PaletteOpen then
+                task.defer(function()
+                    PaletteInput:CaptureFocus()
+                end)
+            end
+            return
+        end
+        if Input and Input.KeyCode == Enum.KeyCode.Escape then
+            ClosePalette()
+        end
+    end))
+
+    Library:GiveSignal(UserInputService.InputBegan:Connect(function(Input: InputObject)
+        if Library.Unloaded or Input.UserInputType ~= Enum.UserInputType.Keyboard then
+            return
+        end
+
+        local Key = Input.KeyCode
+        if Key == Enum.KeyCode.K
+            and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl))
+        then
+            if PaletteOpen then
+                ClosePalette()
+            else
+                OpenPalette()
+            end
+            return
+        end
+
+        if not PaletteOpen then
+            return
+        end
+
+        if Key == Enum.KeyCode.Down or Key == Enum.KeyCode.Up then
+            local Count = #PaletteResults
+            if Count > 0 then
+                PaletteSelected = ((PaletteSelected - 1 + (Key == Enum.KeyCode.Down and 1 or -1)) % Count) + 1
+                PaintPalette()
+            end
+        elseif Key == Enum.KeyCode.Tab then
+            Library.PaletteAct(true)
+        elseif Key == Enum.KeyCode.Escape then
+            ClosePalette()
+        end
+    end))
+
+    --// Hide hint in the bottom bar \\--
+    local function RefreshHint()
+        local Bind = Library.ToggleKeybind
+        local Name
+        if typeof(Bind) == "EnumItem" then
+            Name = Bind.Name
+        elseif typeof(Bind) == "table" then
+            Name = Bind.Value
+        end
+        HintLabel.Text = (typeof(Name) == "string" and Name ~= "" and Name ~= "None") and (Name .. " to hide") or ""
+    end
+    Library.RefreshHint = RefreshHint
+    RefreshHint()
 
     --// Execution \\--
     Library:GiveSignal(SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
