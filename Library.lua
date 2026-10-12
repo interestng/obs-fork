@@ -227,7 +227,7 @@ local Library = {
     DropdownTransitionInfo = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
     KeyPickerTransitionInfo = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 
-    GroupboxTweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+    GroupboxTweenInfo = TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
     RotatingChevronTweenInfo = TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
 
     Animations = {
@@ -419,8 +419,10 @@ local Templates = {
         OutlineWidth = 176,
         -- below this window width the outline hides so the content keeps two usable columns
         OutlineMinWindowWidth = 700,
-        -- where pinned element indexes persist; nil keeps pins for the session only
-        PinsFile = nil,
+        -- where pins and opened sections persist (JSON); nil keeps them for the session only
+        StateFile = nil,
+        -- every groupbox starts collapsed unless the user opened it before (remembered in StateFile)
+        CollapseByDefault = true,
 
         --// Snapping \\--
         MinSidebarWidth = 128,
@@ -437,7 +439,7 @@ local Templates = {
         Animations = {
             ToggleWindow = false,
             TabSwitch = false,
-            Groupbox = false,
+            Groupbox = true,
             Dropdown = false,
             KeyPicker = false,
         },
@@ -2318,9 +2320,10 @@ function Library:MakeDraggable(
 
     local function ShowGhost()
         if not Ghost then
+            -- matte: the window's own flat colours, no accent tint
             Ghost = New("Frame", {
-                BackgroundColor3 = "AccentColor",
-                BackgroundTransparency = 0.88,
+                BackgroundColor3 = "BackgroundColor",
+                BackgroundTransparency = 0.3,
                 Visible = false,
                 ZIndex = 9999,
                 Parent = ScreenGui,
@@ -2330,9 +2333,8 @@ function Library:MakeDraggable(
                 Parent = Ghost,
             })
             New("UIStroke", {
-                Color = "AccentColor",
-                Transparency = 0.35,
-                Thickness = 1.5,
+                Color = "OutlineColor",
+                Thickness = 1,
                 Parent = Ghost,
             })
         end
@@ -11197,6 +11199,9 @@ function Library:CreateWindow(WindowInfo)
     local HintLabel
     local Relayout = function() end
     local ScheduleOutline = function() end
+    local SaveState = function() end
+    -- what persists in StateFile: pinned toggle indexes, and the "Tab/Groupbox" keys left open
+    local State = { pins = {}, open = {} }
 
     do
         local KeybindFrame, KeybindContainer, _, KeybindDivider, KeybindLabelPadding = Library:AddDraggableMenu("Keybinds")
@@ -13100,10 +13105,13 @@ function Library:CreateWindow(WindowInfo)
             local GroupboxCollapseArrow
             local GroupboxLine
             local GroupboxBadge
+            local GroupboxOutline
 
             do
+                -- clipped so the animated collapse reveals and hides the content instead of spilling it
                 GroupboxHolder = New("Frame", {
                     BackgroundColor3 = "BackgroundColor",
+                    ClipsDescendants = true,
                     Size = UDim2.fromScale(1, 0),
                     Parent = BoxHolder,
                 })
@@ -13117,7 +13125,7 @@ function Library:CreateWindow(WindowInfo)
                 New("UIListLayout", {
                     Parent = GroupboxHolder,
                 })
-                Library:AddOutline(GroupboxHolder)
+                GroupboxOutline = Library:AddOutline(GroupboxHolder)
 
                 GroupboxTop = New("Frame", {
                     AutomaticSize = Enum.AutomaticSize.Y,
@@ -13264,6 +13272,7 @@ function Library:CreateWindow(WindowInfo)
                 BoxHolder = BoxHolder,
                 Holder = GroupboxHolder,
                 Container = GroupboxContainer,
+                OutlineStroke = GroupboxOutline,
 
                 Tab = Tab,
                 DependencyBoxes = {},
@@ -13352,7 +13361,18 @@ function Library:CreateWindow(WindowInfo)
 
                 local TargetRotation = if Collapsed then 0 else 180
 
-                GroupboxContainer.Visible = not Collapsed
+                -- when animated, the content stays until the box has shrunk over it
+                local Animated = Library.Animations and Library.Animations.Groupbox
+                if Collapsed and Animated then
+                    local Info = Library.GroupboxTweenInfo
+                    task.delay(Info and Info.Time or 0.2, function()
+                        if Groupbox.Collapsed and not Groupbox.Destroyed then
+                            GroupboxContainer.Visible = false
+                        end
+                    end)
+                else
+                    GroupboxContainer.Visible = not Collapsed
+                end
                 if Library.Animations and Library.Animations.Groupbox then
                     local TweenInfo = Library.GroupboxTweenInfo or TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
                     local Tween = TweenService:Create(GroupboxCollapseArrow, TweenInfo, { Rotation = TargetRotation })
@@ -13380,6 +13400,25 @@ function Library:CreateWindow(WindowInfo)
             function Groupbox:ToggleCollapsed()
                 if Info.DisableCollapsing == true then return end
                 Groupbox:SetCollapsed(not Groupbox.Collapsed)
+            end
+
+            local StateKey = Tab.Name .. "/" .. Info.Name
+            local SetCollapsedRaw = Groupbox.SetCollapsed
+
+            -- every later collapse or expand is the user's (arrow, outline, collapse all, a jump), so remember it
+            function Groupbox:SetCollapsed(Collapsed: boolean)
+                SetCollapsedRaw(Groupbox, Collapsed)
+                if Info.DisableCollapsing == true or Groupbox.Building then
+                    return
+                end
+                local Index = table.find(State.open, StateKey)
+                if Collapsed and Index then
+                    table.remove(State.open, Index)
+                    SaveState()
+                elseif not Collapsed and not Index then
+                    table.insert(State.open, StateKey)
+                    SaveState()
+                end
             end
 
             Library:MakeBoxPopOut(Groupbox, {
@@ -13514,8 +13553,14 @@ function Library:CreateWindow(WindowInfo)
                 Groupbox:Hide()
             end
 
-            if Info.DisableCollapsing ~= true and Info.Collapsed == true then
+            local StartCollapsed = Info.Collapsed == true
+            if WindowInfo.CollapseByDefault then
+                StartCollapsed = not table.find(State.open, StateKey)
+            end
+            if Info.DisableCollapsing ~= true and StartCollapsed then
+                Groupbox.Building = true
                 Groupbox:SetCollapsed(true)
+                Groupbox.Building = nil
             end
 
             return Groupbox
@@ -14854,26 +14899,24 @@ function Library:CreateWindow(WindowInfo)
     end
 
     --// Jumping to a groupbox or element \\--
-    local function Flash(Target: GuiObject)
-        local Flasher = New("Frame", {
-            BackgroundColor3 = "AccentColor",
-            BackgroundTransparency = 0.8,
-            Size = UDim2.fromScale(1, 1),
-            ZIndex = Target.ZIndex + 1,
-            Parent = Target,
-        })
-        New("UICorner", {
-            CornerRadius = UDim.new(0, Library.CornerRadius),
-            Parent = Flasher,
-        })
-        local Fade = TweenService:Create(Flasher, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            BackgroundTransparency = 1,
-        })
-        Fade.Completed:Once(function()
-            Library:RemoveFromRegistry(Flasher)
-            Flasher:Destroy()
-        end)
-        Fade:Play()
+    -- the groupbox's own border (and the element's label) turns accent and fades back, so the
+    -- highlight is exactly what is on screen, clipping and corners included
+    local FlashInfo = TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+    local ScrollInfo = TweenInfo.new(0.32, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+
+    local function Flash(Groupbox, Element)
+        local Stroke = Groupbox.OutlineStroke
+        if Stroke then
+            Stroke.Color = Library.Scheme.AccentColor
+            TweenService:Create(Stroke, FlashInfo, { Color = Library.Scheme.OutlineColor }):Play()
+        end
+
+        local Label = Element and Element.TextLabel
+        if typeof(Label) == "Instance" and Label:IsA("TextLabel") then
+            local Rest = Label.TextColor3
+            Label.TextColor3 = Library.Scheme.AccentColor
+            TweenService:Create(Label, FlashInfo, { TextColor3 = Rest }):Play()
+        end
     end
 
     local function JumpTo(Groupbox, Element)
@@ -14891,42 +14934,50 @@ function Library:CreateWindow(WindowInfo)
         task.defer(function()
             local Target = (Element and (Element.Holder or Element.Base)) or Groupbox.Holder
             local Side = Groupbox.BoxHolder and Groupbox.BoxHolder.Parent
-            if Groupbox.PoppedOut or not (Side and Side:IsA("ScrollingFrame")) then
-                Flash(Target)
-                return
+            if not Groupbox.PoppedOut and Side and Side:IsA("ScrollingFrame") then
+                local Offset = (Target.AbsolutePosition.Y - Side.AbsolutePosition.Y) / Library.DPIScale
+                local MaxY = math.max(0, (Side.AbsoluteCanvasSize.Y - Side.AbsoluteWindowSize.Y) / Library.DPIScale)
+                local Y = math.clamp(Side.CanvasPosition.Y + Offset - 8, 0, MaxY)
+                TweenService:Create(Side, ScrollInfo, { CanvasPosition = Vector2.new(0, Y) }):Play()
             end
-
-            local Offset = (Target.AbsolutePosition.Y - Side.AbsolutePosition.Y) / Library.DPIScale
-            Side.CanvasPosition = Vector2.new(0, math.max(0, Side.CanvasPosition.Y + Offset - 8))
-            Flash(Target)
+            Flash(Groupbox, Element)
         end)
     end
 
     --// Pins \\--
     local HttpService = cloneref(game:GetService("HttpService"))
-    local Pins = {}
+    local Pins = State.pins
 
-    if typeof(WindowInfo.PinsFile) == "string" and readfile and isfile then
+    local function LoadStrings(Into, From)
+        if typeof(From) ~= "table" then
+            return
+        end
+        for _, Value in From do
+            if typeof(Value) == "string" then
+                table.insert(Into, Value)
+            end
+        end
+    end
+
+    if typeof(WindowInfo.StateFile) == "string" and readfile and isfile then
         pcall(function()
-            if isfile(WindowInfo.PinsFile) then
-                local Saved = HttpService:JSONDecode(readfile(WindowInfo.PinsFile))
+            if isfile(WindowInfo.StateFile) then
+                local Saved = HttpService:JSONDecode(readfile(WindowInfo.StateFile))
                 if typeof(Saved) == "table" then
-                    for _, Idx in Saved do
-                        if typeof(Idx) == "string" then
-                            table.insert(Pins, Idx)
-                        end
-                    end
+                    LoadStrings(State.pins, Saved.pins)
+                    LoadStrings(State.open, Saved.open)
                 end
             end
         end)
     end
 
-    local function SavePins()
-        if typeof(WindowInfo.PinsFile) ~= "string" or not writefile then
+    SaveState = function()
+        if typeof(WindowInfo.StateFile) ~= "string" or not writefile then
             return
         end
-        pcall(writefile, WindowInfo.PinsFile, HttpService:JSONEncode(Pins))
+        pcall(writefile, WindowInfo.StateFile, HttpService:JSONEncode(State))
     end
+    local SavePins = SaveState
 
     Library.TogglePin = function(Toggle)
         if typeof(Toggle.Idx) ~= "string" then

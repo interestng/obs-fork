@@ -197,9 +197,9 @@ local ElementParser = {}; do
     CreateParser(
         "Groupbox", "Tabs",
         function(Index: string, Groupbox: any, TabIndex: string)
+            -- collapsed state is a per-user layout preference kept in the window's StateFile, not in configs
             return {
                 tabIdx = TabIndex,
-                collapsed = Groupbox.Collapsed,
                 poppedOut = Groupbox.PoppedOut == true,
                 popoutPos = if Groupbox.PoppedOut and Groupbox.PopOutFloat then SpecialValueParser.UDim2.Encode(Groupbox.PopOutFloat.Position) else nil,
             }
@@ -214,11 +214,6 @@ local ElementParser = {}; do
 
             local Groupbox = Tab.Groupboxes[Index]
             if not Groupbox then return end
-
-            --// Collapsed
-            if Groupbox.Collapsed ~= Data.collapsed then
-                Groupbox:SetCollapsed(Data.collapsed == true)
-            end
 
             --// Popout
             if Groupbox.PopOutEnabled then
