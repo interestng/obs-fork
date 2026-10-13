@@ -11115,7 +11115,11 @@ function Library:CreateWindow(WindowInfo)
 
     Library.OriginalMinSize =
         Vector2.new(math.min(Library.OriginalMinSize.X, MaxX), math.min(Library.OriginalMinSize.Y, MaxY))
-    Library.MinSize = Vector2.new(math.min(WindowInfo.MinContainerWidth, MaxX), Library.OriginalMinSize.Y)
+    -- resizing stops where the tab rail and the content's minimum width still fit
+    Library.MinSize = Vector2.new(
+        math.min(WindowInfo.MinContainerWidth + WindowInfo.SidebarCompactWidth + 1, MaxX),
+        Library.OriginalMinSize.Y
+    )
 
     WindowInfo.Size = UDim2.fromOffset(
         math.clamp(WindowInfo.Size.X.Offset, Library.MinSize.X, MaxX),
@@ -12229,7 +12233,8 @@ function Library:CreateWindow(WindowInfo)
     end
 
     function Window:SetSidebarWidth(Width)
-        Width = math.clamp(Width, 48, MainFrame.Size.X.Offset - WindowInfo.MinContainerWidth - 1)
+        -- the window can be narrower than rail + MinContainerWidth (small screens), so the max is floored
+        Width = math.clamp(Width, 48, math.max(48, MainFrame.Size.X.Offset - WindowInfo.MinContainerWidth - 1))
 
         OutlineShown = WindowInfo.ShowOutline == true
             and MainFrame.Size.X.Offset >= WindowInfo.OutlineMinWindowWidth
