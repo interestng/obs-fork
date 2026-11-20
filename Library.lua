@@ -11109,6 +11109,11 @@ function Library:CreateWindow(WindowInfo)
             task.wait()
         until ViewportSize.X > 5 and ViewportSize.Y > 5
     end
+    -- a minimised or still loading client reports a ~1x1 viewport; clamping to it built a tiny square window, so
+    -- size against a desktop screen like the drag code's fallback does
+    if ViewportSize.X < 400 or ViewportSize.Y < 300 then
+        ViewportSize = Vector2.new(1920, 1080)
+    end
 
     local MaxX = ViewportSize.X - 64
     local MaxY = ViewportSize.Y - 64
